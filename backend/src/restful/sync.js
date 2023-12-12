@@ -22,36 +22,80 @@ export default function register($app) {
     $app.get('/api/sync/artifact/:name', syncArtifact);
 }
 
-async function produceArtifact({ type, name, platform }) {
+async function produceArtifact({
+    type,
+    name,
+    platform,
+    url,
+    ua,
+    content,
+    mergeSources,
+}) {
     platform = platform || 'JSON';
-
-    // produce Clash node format for ShadowRocket
-    if (platform === 'ShadowRocket') platform = 'Clash';
 
     if (type === 'subscription') {
         const allSubs = $.read(SUBS_KEY);
         const sub = findByName(allSubs, name);
         let raw;
-        if (sub.source === 'local') {
+        if (content && !['localFirst', 'remoteFirst'].includes(mergeSources)) {
+            raw = content;
+        } else if (url) {
+            raw = await Promise.all(
+                url
+                    .split(/[\r\n]+/)
+                    .map((i) => i.trim())
+                    .filter((i) => i.length)
+                    .map((url) => download(url, ua)),
+            );
+            if (mergeSources === 'localFirst') {
+                raw.unshift(content);
+            } else if (mergeSources === 'remoteFirst') {
+                raw.push(content);
+            }
+        } else if (
+            sub.source === 'local' &&
+            !['localFirst', 'remoteFirst'].includes(sub.mergeSources)
+        ) {
             raw = sub.content;
         } else {
-            raw = await download(sub.url, sub.ua);
+            raw = await Promise.all(
+                sub.url
+                    .split(/[\r\n]+/)
+                    .map((i) => i.trim())
+                    .filter((i) => i.length)
+                    .map((url) => download(url, sub.ua)),
+            );
+            if (sub.mergeSources === 'localFirst') {
+                raw.unshift(sub.content);
+            } else if (sub.mergeSources === 'remoteFirst') {
+                raw.push(sub.content);
+            }
         }
         // parse proxies
-        let proxies = ProxyUtils.parse(raw);
+        let proxies = (Array.isArray(raw) ? raw : [raw])
+            .map((i) => ProxyUtils.parse(i))
+            .flat();
+
+        proxies.forEach((proxy) => {
+            proxy.subName = sub.name;
+        });
         // apply processors
         proxies = await ProxyUtils.process(
             proxies,
             sub.process || [],
             platform,
+            { [sub.name]: sub },
         );
+        if (proxies.length === 0) {
+            throw new Error(`订阅 ${name} 中不含有效节点`);
+        }
         // check duplicate
         const exist = {};
         for (const proxy of proxies) {
             if (exist[proxy.name]) {
                 $.notify(
                     '🌍 Sub-Store',
-                    '⚠️ 订阅包含重复节点！',
+                    `⚠️ 订阅 ${name} 包含重复节点 ${proxy.name}！`,
                     '请仔细检测配置！',
                     {
                         'media-url':
@@ -70,6 +114,7 @@ async function produceArtifact({ type, name, platform }) {
         const collection = findByName(allCols, name);
         const subnames = collection.subscriptions;
         const results = {};
+        const errors = {};
         let processed = 0;
 
         await Promise.all(
@@ -78,18 +123,43 @@ async function produceArtifact({ type, name, platform }) {
                 try {
                     $.info(`正在处理子订阅：${sub.name}...`);
                     let raw;
-                    if (sub.source === 'local') {
+                    if (
+                        sub.source === 'local' &&
+                        !['localFirst', 'remoteFirst'].includes(
+                            sub.mergeSources,
+                        )
+                    ) {
                         raw = sub.content;
                     } else {
-                        raw = await download(sub.url, sub.ua);
+                        raw = await await Promise.all(
+                            sub.url
+                                .split(/[\r\n]+/)
+                                .map((i) => i.trim())
+                                .filter((i) => i.length)
+                                .map((url) => download(url, sub.ua)),
+                        );
+                        if (sub.mergeSources === 'localFirst') {
+                            raw.unshift(sub.content);
+                        } else if (sub.mergeSources === 'remoteFirst') {
+                            raw.push(sub.content);
+                        }
                     }
                     // parse proxies
-                    let currentProxies = ProxyUtils.parse(raw);
+                    let currentProxies = (Array.isArray(raw) ? raw : [raw])
+                        .map((i) => ProxyUtils.parse(i))
+                        .flat();
+
+                    currentProxies.forEach((proxy) => {
+                        proxy.subName = sub.name;
+                        proxy.collectionName = collection.name;
+                    });
+
                     // apply processors
                     currentProxies = await ProxyUtils.process(
                         currentProxies,
                         sub.process || [],
                         platform,
+                        { [sub.name]: sub, _collection: collection },
                     );
                     results[name] = currentProxies;
                     processed++;
@@ -100,6 +170,7 @@ async function produceArtifact({ type, name, platform }) {
                     );
                 } catch (err) {
                     processed++;
+                    errors[name] = err;
                     $.error(
                         `❌ 处理组合订阅中的子订阅: ${
                             sub.name
@@ -111,20 +182,33 @@ async function produceArtifact({ type, name, platform }) {
             }),
         );
 
+        if (Object.keys(errors).length > 0) {
+            throw new Error(
+                `组合订阅 ${name} 中的子订阅 ${Object.keys(errors).join(
+                    ', ',
+                )} 发生错误, 请查看日志`,
+            );
+        }
+
         // merge proxies with the original order
         let proxies = Array.prototype.concat.apply(
             [],
-            subnames.map((name) => results[name]),
+            subnames.map((name) => results[name] || []),
         );
+
+        proxies.forEach((proxy) => {
+            proxy.collectionName = collection.name;
+        });
 
         // apply own processors
         proxies = await ProxyUtils.process(
             proxies,
             collection.process || [],
             platform,
+            { _collection: collection },
         );
         if (proxies.length === 0) {
-            throw new Error(`组合订阅中不含有效节点！`);
+            throw new Error(`组合订阅 ${name} 中不含有效节点`);
         }
         // check duplicate
         const exist = {};
@@ -132,7 +216,7 @@ async function produceArtifact({ type, name, platform }) {
             if (exist[proxy.name]) {
                 $.notify(
                     '🌍 Sub-Store',
-                    '⚠️ 订阅包含重复节点！',
+                    `⚠️ 组合订阅 ${name} 包含重复节点 ${proxy.name}！`,
                     '请仔细检测配置！',
                     {
                         'media-url':
@@ -245,20 +329,20 @@ async function syncArtifact(req, res) {
         return;
     }
 
-    const output = await produceArtifact({
-        type: artifact.type,
-        name: artifact.source,
-        platform: artifact.platform,
-    });
-
-    $.info(
-        `正在上传配置：${artifact.name}\n>>>${JSON.stringify(
-            artifact,
-            null,
-            2,
-        )}`,
-    );
     try {
+        const output = await produceArtifact({
+            type: artifact.type,
+            name: artifact.source,
+            platform: artifact.platform,
+        });
+
+        $.info(
+            `正在上传配置：${artifact.name}\n>>>${JSON.stringify(
+                artifact,
+                null,
+                2,
+            )}`,
+        );
         const resp = await syncToGist({
             [encodeURIComponent(artifact.name)]: {
                 content: output,

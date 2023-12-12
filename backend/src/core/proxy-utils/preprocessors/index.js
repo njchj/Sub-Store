@@ -13,17 +13,22 @@ function Base64Encoded() {
     const name = 'Base64 Pre-processor';
 
     const keys = [
-        'dm1lc3M',
-        'c3NyOi8v',
-        'dHJvamFu',
-        'c3M6Ly',
-        'c3NkOi8v',
-        'c2hhZG93',
-        'aHR0c',
+        'dm1lc3M', // vmess
+        'c3NyOi8v', // ssr://
+        'dHJvamFu', // trojan
+        'c3M6Ly', // ss:/
+        'c3NkOi8v', // ssd://
+        'c2hhZG93', // shadow
+        'aHR0c', // htt
+        'dmxlc3M=', // vless
+        'aHlzdGVyaWEy', // hysteria2
     ];
 
     const test = function (raw) {
-        return keys.some((k) => raw.indexOf(k) !== -1);
+        return (
+            !/^\w+:\/\/\w+/im.test(raw) &&
+            keys.some((k) => raw.indexOf(k) !== -1)
+        );
     };
     const parse = function (raw) {
         raw = Base64.decode(raw);
@@ -35,7 +40,9 @@ function Base64Encoded() {
 function Clash() {
     const name = 'Clash Pre-processor';
     const test = function (raw) {
-        return /proxies/.test(raw);
+        if (!/proxies/.test(raw)) return false;
+        const content = safeLoad(raw);
+        return content.proxies && Array.isArray(content.proxies);
     };
     const parse = function (raw) {
         // Clash YAML format
@@ -95,24 +102,12 @@ function FullConfig() {
         return /^(\[server_local\]|\[Proxy\])/gm.test(raw);
     };
     const parse = function (raw) {
-        const regex = /^\[server_local]|\[Proxy]/gm;
-        const match = regex.exec(raw);
-        const results = [];
-
-        let first = true;
-        if (match) {
-            raw = raw.substring(match.index);
-            for (const line of raw.split('\n')) {
-                if (!first && !line.test(/^\s*\[/)) {
-                    results.push(line);
-                }
-                // skip the first line
-                first = false;
-            }
-            return results.join('\n');
-        }
+        const match = raw.match(
+            /^\[server_local|Proxy\]([\s\S]+?)^\[.+?\](\r?\n|$)/im,
+        )?.[1];
+        return match || raw;
     };
     return { name, test, parse };
 }
 
-export default [HTML(), Base64Encoded(), Clash(), SSD(), FullConfig()];
+export default [HTML(), Clash(), Base64Encoded(), SSD(), FullConfig()];

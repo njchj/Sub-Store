@@ -1,37 +1,20 @@
 import { isPresent } from '@/core/proxy-utils/producers/utils';
 
-export default function Clash_Producer() {
+export default function ShadowRocket_Producer() {
     const type = 'ALL';
     const produce = (proxies) => {
-        // VLESS XTLS is not supported by Clash
-        // https://github.com/MetaCubeX/Clash.Meta/blob/Alpha/docs/config.yaml#L532
-        // github.com/Dreamacro/clash/pull/2891/files
-        // filter unsupported proxies
-        proxies = proxies.filter((proxy) => {
-            if (
-                ![
-                    'ss',
-                    'ssr',
-                    'vmess',
-                    'vless',
-                    'socks5',
-                    'http',
-                    'snell',
-                    'trojan',
-                    'wireguard',
-                ].includes(proxy.type) ||
-                (proxy.type === 'snell' && String(proxy.version) === '4') ||
-                (proxy.type === 'vless' &&
-                    (typeof proxy.flow !== 'undefined' ||
-                        proxy['reality-opts']))
-            ) {
-                return false;
-            }
-            return true;
-        });
         return (
             'proxies:\n' +
             proxies
+                .filter((proxy) => {
+                    if (
+                        proxy.type === 'snell' &&
+                        String(proxy.version) === '4'
+                    ) {
+                        return false;
+                    }
+                    return true;
+                })
                 .map((proxy) => {
                     if (proxy.type === 'vmess') {
                         // handle vmess aead
@@ -45,7 +28,8 @@ export default function Clash_Producer() {
                             proxy.servername = proxy.sni;
                             delete proxy.sni;
                         }
-                        // https://dreamacro.github.io/clash/configuration/outbound.html#vmess
+                        // https://github.com/MetaCubeX/Clash.Meta/blob/Alpha/docs/config.yaml#L400
+                        // https://stash.wiki/proxy-protocols/proxy-types#vmess
                         if (
                             isPresent(proxy, 'cipher') &&
                             ![
@@ -56,6 +40,65 @@ export default function Clash_Producer() {
                             ].includes(proxy.cipher)
                         ) {
                             proxy.cipher = 'auto';
+                        }
+                    } else if (proxy.type === 'tuic') {
+                        if (isPresent(proxy, 'alpn')) {
+                            proxy.alpn = Array.isArray(proxy.alpn)
+                                ? proxy.alpn
+                                : [proxy.alpn];
+                        } else {
+                            proxy.alpn = ['h3'];
+                        }
+                        if (
+                            isPresent(proxy, 'tfo') &&
+                            !isPresent(proxy, 'fast-open')
+                        ) {
+                            proxy['fast-open'] = proxy.tfo;
+                        }
+                        // https://github.com/MetaCubeX/Clash.Meta/blob/Alpha/adapter/outbound/tuic.go#L197
+                        if (
+                            (!proxy.token || proxy.token.length === 0) &&
+                            !isPresent(proxy, 'version')
+                        ) {
+                            proxy.version = 5;
+                        }
+                    } else if (proxy.type === 'hysteria') {
+                        // auth_str 将会在未来某个时候删除 但是有的机场不规范
+                        if (
+                            isPresent(proxy, 'auth_str') &&
+                            !isPresent(proxy, 'auth-str')
+                        ) {
+                            proxy['auth-str'] = proxy['auth_str'];
+                        }
+                        if (isPresent(proxy, 'alpn')) {
+                            proxy.alpn = Array.isArray(proxy.alpn)
+                                ? proxy.alpn
+                                : [proxy.alpn];
+                        }
+                        if (
+                            isPresent(proxy, 'tfo') &&
+                            !isPresent(proxy, 'fast-open')
+                        ) {
+                            proxy['fast-open'] = proxy.tfo;
+                        }
+                    } else if (proxy.type === 'hysteria2') {
+                        if (
+                            proxy['obfs-password'] &&
+                            proxy.obfs == 'salamander'
+                        ) {
+                            proxy.obfs = proxy['obfs-password'];
+                            delete proxy['obfs-password'];
+                        }
+                        if (isPresent(proxy, 'alpn')) {
+                            proxy.alpn = Array.isArray(proxy.alpn)
+                                ? proxy.alpn
+                                : [proxy.alpn];
+                        }
+                        if (
+                            isPresent(proxy, 'tfo') &&
+                            !isPresent(proxy, 'fast-open')
+                        ) {
+                            proxy['fast-open'] = proxy.tfo;
                         }
                     } else if (proxy.type === 'wireguard') {
                         proxy.keepalive =
@@ -90,6 +133,7 @@ export default function Clash_Producer() {
                             proxy['http-opts'].headers.Host = [httpHost];
                         }
                     }
+
                     if (
                         ['trojan', 'tuic', 'hysteria', 'hysteria2'].includes(
                             proxy.type,

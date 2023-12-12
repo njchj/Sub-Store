@@ -1,4 +1,5 @@
 import resourceCache from '@/utils/resource-cache';
+import scriptResourceCache from '@/utils/script-resource-cache';
 import { isIPv4, isIPv6 } from '@/utils';
 import { FULL } from '@/utils/logical';
 import { getFlag } from '@/utils/geo';
@@ -6,6 +7,8 @@ import lodash from 'lodash';
 import $ from '@/core/app';
 import { hex_md5 } from '@/vendor/md5';
 import { ProxyUtils } from '@/core/proxy-utils';
+import env from '@/utils/env';
+import { getFlowHeaders, parseFlowHeaders, flowTransfer } from '@/utils/flow';
 
 /**
  The rule "(name CONTAINS "🇨🇳") AND (port IN [80, 443])" can be expressed as follows:
@@ -293,7 +296,7 @@ function RegexDeleteOperator(regex) {
  1. This function name should be `operator`!
  2. Always declare variables before using them!
  */
-function ScriptOperator(script, targetPlatform, $arguments) {
+function ScriptOperator(script, targetPlatform, $arguments, source) {
     return {
         name: 'Script Operator',
         func: async (proxies) => {
@@ -304,7 +307,24 @@ function ScriptOperator(script, targetPlatform, $arguments) {
                     script,
                     $arguments,
                 );
-                output = operator(proxies, targetPlatform);
+                output = operator(proxies, targetPlatform, { source, ...env });
+            })();
+            return output;
+        },
+        nodeFunc: async (proxies) => {
+            let output = proxies;
+            await (async function () {
+                const operator = createDynamicFunction(
+                    'operator',
+                    `async function operator(proxies = []) {
+                        return proxies.map(($server = {}) => {
+                          ${script}
+                          return $server
+                        })
+                      }`,
+                    $arguments,
+                );
+                output = operator(proxies, targetPlatform, { source, ...env });
             })();
             return output;
         },
@@ -377,6 +397,46 @@ const DOMAIN_RESOLVERS = {
         resourceCache.set(id, result);
         return result;
     },
+    Ali: async function (domain) {
+        const id = hex_md5(`ALI:${domain}`);
+        const cached = resourceCache.get(id);
+        if (cached) return cached;
+        const resp = await $.http.get({
+            url: `http://223.6.6.6/resolve?name=${encodeURIComponent(
+                domain,
+            )}&type=A&short=1`,
+            headers: {
+                accept: 'application/dns-json',
+            },
+        });
+        const answers = JSON.parse(resp.body);
+        if (answers.length === 0) {
+            throw new Error('No answers');
+        }
+        const result = answers[answers.length - 1];
+        resourceCache.set(id, result);
+        return result;
+    },
+    Tencent: async function (domain) {
+        const id = hex_md5(`ALI:${domain}`);
+        const cached = resourceCache.get(id);
+        if (cached) return cached;
+        const resp = await $.http.get({
+            url: `http://119.28.28.28/d?type=A&dn=${encodeURIComponent(
+                domain,
+            )}`,
+            headers: {
+                accept: 'application/dns-json',
+            },
+        });
+        const answers = resp.body.split(';').map((i) => i.split(',')[0]);
+        if (answers.length === 0) {
+            throw new Error('No answers');
+        }
+        const result = answers[answers.length - 1];
+        resourceCache.set(id, result);
+        return result;
+    },
 };
 
 function ResolveDomainOperator({ provider }) {
@@ -391,7 +451,9 @@ function ResolveDomainOperator({ provider }) {
             const limit = 15; // more than 20 concurrency may result in surge TCP connection shortage.
             const totalDomain = [
                 ...new Set(
-                    proxies.filter((p) => !isIP(p.server)).map((c) => c.server),
+                    proxies
+                        .filter((p) => !isIP(p.server) && !p['no-resolve'])
+                        .map((c) => c.server),
                 ),
             ];
             const totalBatch = Math.ceil(totalDomain.length / limit);
@@ -415,8 +477,15 @@ function ResolveDomainOperator({ provider }) {
                 }
                 await Promise.all(currentBatch);
             }
-            proxies.forEach((proxy) => {
-                proxy.server = results[proxy.server] || proxy.server;
+            proxies.forEach((p) => {
+                if (!p['no-resolve']) {
+                    if (results[p.server]) {
+                        p.server = results[p.server];
+                        p.resolved = true;
+                    } else {
+                        p.resolved = false;
+                    }
+                }
             });
 
             return proxies;
@@ -521,7 +590,7 @@ function TypeFilter(types) {
  1. This function name should be `filter`!
  2. Always declare variables before using them!
  */
-function ScriptFilter(script, targetPlatform, $arguments) {
+function ScriptFilter(script, targetPlatform, $arguments, source) {
     return {
         name: 'Script Filter',
         func: async (proxies) => {
@@ -532,7 +601,23 @@ function ScriptFilter(script, targetPlatform, $arguments) {
                     script,
                     $arguments,
                 );
-                output = filter(proxies, targetPlatform);
+                output = filter(proxies, targetPlatform, { source, ...env });
+            })();
+            return output;
+        },
+        nodeFunc: async (proxies) => {
+            let output = FULL(proxies.length, true);
+            await (async function () {
+                const filter = createDynamicFunction(
+                    'filter',
+                    `async function filter(proxies = []) {
+                        return proxies.filter(($server = {}) => {
+                          ${script}
+                        })
+                      }`,
+                    $arguments,
+                );
+                output = filter(proxies, targetPlatform, { source, ...env });
             })();
             return output;
         },
@@ -565,7 +650,30 @@ async function ApplyFilter(filter, objs) {
         selected = await filter.func(objs);
     } catch (err) {
         // print log and skip this filter
-        $.log(`Cannot apply filter ${filter.name}\n Reason: ${err}`);
+        $.error(`Cannot apply filter ${filter.name}\n Reason: ${err}`);
+        let funcErr = '';
+        let funcErrMsg = `${err.message ?? err}`;
+        if (funcErrMsg.includes('$server is not defined')) {
+            funcErr = '';
+        } else {
+            funcErr = `执行 function filter 失败 ${funcErrMsg}; `;
+        }
+        try {
+            selected = await filter.nodeFunc(objs);
+        } catch (err) {
+            $.error(
+                `Cannot apply filter ${filter.name}(node script)! Reason: ${err}`,
+            );
+            let nodeErr = '';
+            let nodeErrMsg = `${err.message ?? err}`;
+            if (funcErr && nodeErrMsg === funcErrMsg) {
+                nodeErr = '';
+                funcErr = `执行失败 ${funcErrMsg}`;
+            } else {
+                nodeErr = `执行节点快捷过滤脚本 失败 ${nodeErr}`;
+            }
+            throw new Error(`脚本过滤 ${funcErr}${nodeErr}`);
+        }
     }
     return objs.filter((_, i) => selected[i]);
 }
@@ -576,8 +684,33 @@ async function ApplyOperator(operator, objs) {
         const output_ = await operator.func(output);
         if (output_) output = output_;
     } catch (err) {
-        // print log and skip this operator
-        $.log(`Cannot apply operator ${operator.name}! Reason: ${err}`);
+        $.error(
+            `Cannot apply operator ${operator.name}(function operator)! Reason: ${err}`,
+        );
+        let funcErr = '';
+        let funcErrMsg = `${err.message ?? err}`;
+        if (funcErrMsg.includes('$server is not defined')) {
+            funcErr = '';
+        } else {
+            funcErr = `执行 function operator 失败 ${funcErrMsg}; `;
+        }
+        try {
+            const output_ = await operator.nodeFunc(output);
+            if (output_) output = output_;
+        } catch (err) {
+            $.error(
+                `Cannot apply operator ${operator.name}(node script)! Reason: ${err}`,
+            );
+            let nodeErr = '';
+            let nodeErrMsg = `${err.message ?? err}`;
+            if (funcErr && nodeErrMsg === funcErrMsg) {
+                nodeErr = '';
+                funcErr = `执行失败 ${funcErrMsg}`;
+            } else {
+                nodeErr = `执行节点快捷脚本 失败 ${nodeErr}`;
+            }
+            throw new Error(`脚本操作 ${funcErr}${nodeErr}`);
+        }
     }
     return output;
 }
@@ -624,6 +757,7 @@ function removeFlag(str) {
 }
 
 function createDynamicFunction(name, script, $arguments) {
+    const flowUtils = { getFlowHeaders, parseFlowHeaders, flowTransfer };
     if ($.env.isLoon) {
         return new Function(
             '$arguments',
@@ -633,6 +767,8 @@ function createDynamicFunction(name, script, $arguments) {
             '$httpClient',
             '$notification',
             'ProxyUtils',
+            'scriptResourceCache',
+            'flowUtils',
             `${script}\n return ${name}`,
         )(
             $arguments,
@@ -645,6 +781,8 @@ function createDynamicFunction(name, script, $arguments) {
             // eslint-disable-next-line no-undef
             $notification,
             ProxyUtils,
+            scriptResourceCache,
+            flowUtils,
         );
     } else {
         return new Function(
@@ -652,7 +790,10 @@ function createDynamicFunction(name, script, $arguments) {
             '$substore',
             'lodash',
             'ProxyUtils',
+            'scriptResourceCache',
+            'flowUtils',
+
             `${script}\n return ${name}`,
-        )($arguments, $, lodash, ProxyUtils);
+        )($arguments, $, lodash, ProxyUtils, scriptResourceCache, flowUtils);
     }
 }

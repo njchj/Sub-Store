@@ -33,7 +33,7 @@
     }
 }
 
-start = (shadowsocksr/shadowsocks/vmess/vless/trojan/https/http) {
+start = (shadowsocksr/shadowsocks/vmess/vless/trojan/https/http/hysteria2) {
     return proxy;
 }
 
@@ -42,7 +42,7 @@ shadowsocksr = tag equals "shadowsocksr"i address method password (ssr_protocol/
     // handle ssr obfs
     proxy.obfs = obfs.type;
 }
-shadowsocks = tag equals "shadowsocks"i address method password (obfs_ss/obfs_host/obfs_uri/fast_open/udp_relay/others)* {
+shadowsocks = tag equals "shadowsocks"i address method password (obfs_typev obfs_hostv)? (obfs_ss/obfs_host/obfs_uri/fast_open/udp_relay/others)* {
     proxy.type = "ss";
     // handle ss obfs
     if (obfs.type == "http" || obfs.type === "tls") {
@@ -65,6 +65,9 @@ vless = tag equals "vless"i address uuid (transport/transport_host/transport_pat
 trojan = tag equals "trojan"i address password (transport/transport_host/transport_path/over_tls/tls_host/tls_verification/fast_open/udp_relay/others)* {
     proxy.type = "trojan";
     handleTransport();
+}
+hysteria2 = tag equals "hysteria2"i address password (tls_host/tls_verification/udp_relay/download_bandwidth/ecn/others)* {
+    proxy.type = "hysteria2";
 }
 https = tag equals "https"i address (username password)? (tls_host/tls_verification/fast_open/udp_relay/others)* {
     proxy.type = "http";
@@ -140,6 +143,9 @@ username = & {
 password = comma '"' match:[^"]* '"' { proxy.password = match.join(""); }
 uuid = comma '"' match:[^"]+ '"' { proxy.uuid = match.join(""); }
 
+obfs_typev = comma type:("http"/"tls") { obfs.type = type; }
+obfs_hostv = comma match:[^,]+ { obfs.host = match.join(""); }
+
 obfs_ss = comma "obfs-name" equals type:("http"/"tls") { obfs.type = type; }
 
 obfs_ssr = comma "obfs" equals type:("plain"/"http_simple"/"http_post"/"random_head"/"tls1.2_ticket_auth"/"tls1.2_ticket_fastauth") { obfs.type = type; }
@@ -164,6 +170,9 @@ tls_verification = comma "skip-cert-verify" equals flag:bool { proxy["skip-cert-
 
 fast_open = comma "fast-open" equals flag:bool { proxy.tfo = flag; }
 udp_relay = comma "udp" equals flag:bool { proxy.udp = flag; }
+
+ecn = comma "ecn" equals flag:bool { proxy.ecn = flag; }
+download_bandwidth = comma "download-bandwidth" equals match:[^,]+ { proxy.down = match.join(""); }
 
 tag = match:[^=,]* { proxy.name = match.join("").trim(); }
 comma = _ "," _

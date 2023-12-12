@@ -1,5 +1,5 @@
 import download from '@/utils/download';
-
+import { isIPv4, isIPv6 } from '@/utils';
 import PROXY_PROCESSORS, { ApplyProcessor } from './processors';
 import PROXY_PREPROCESSORS from './preprocessors';
 import PROXY_PRODUCERS from './producers';
@@ -36,7 +36,7 @@ function parse(raw) {
         if (lastParser) {
             const [proxy, error] = tryParse(lastParser, line);
             if (!error) {
-                proxies.push(proxy);
+                proxies.push(lastParse(proxy));
                 success = true;
             }
         }
@@ -46,7 +46,7 @@ function parse(raw) {
             for (const parser of PROXY_PARSERS) {
                 const [proxy, error] = tryParse(parser, line);
                 if (!error) {
-                    proxies.push(proxy);
+                    proxies.push(lastParse(proxy));
                     lastParser = parser;
                     success = true;
                     $.info(`${parser.name} is activated`);
@@ -63,35 +63,50 @@ function parse(raw) {
     return proxies;
 }
 
-async function process(proxies, operators = [], targetPlatform) {
+async function process(proxies, operators = [], targetPlatform, source) {
     for (const item of operators) {
         // process script
         let script;
-        const $arguments = {};
+        let $arguments = {};
         if (item.type.indexOf('Script') !== -1) {
             const { mode, content } = item.args;
             if (mode === 'link') {
-                const url = content;
+                let noCache;
+                let url = content;
+                if (url.endsWith('#noCache')) {
+                    url = url.replace(/#noCache$/, '');
+                    noCache = true;
+                }
                 // extract link arguments
                 const rawArgs = url.split('#');
                 if (rawArgs.length > 1) {
-                    for (const pair of rawArgs[1].split('&')) {
-                        const key = pair.split('=')[0];
-                        const value = pair.split('=')[1] || true;
-                        $arguments[key] = value;
+                    try {
+                        // 支持 `#${encodeURIComponent(JSON.stringify({arg1: "1"}))}`
+                        $arguments = JSON.parse(decodeURIComponent(rawArgs[1]));
+                    } catch (e) {
+                        for (const pair of rawArgs[1].split('&')) {
+                            const key = pair.split('=')[0];
+                            const value = pair.split('=')[1];
+                            // 部分兼容之前的逻辑 const value = pair.split('=')[1] || true;
+                            $arguments[key] =
+                                value == null || value === ''
+                                    ? true
+                                    : decodeURIComponent(value);
+                        }
                     }
                 }
 
                 // if this is a remote script, download it
                 try {
-                    script = await download(url.split('#')[0]);
+                    script = await download(
+                        `${url.split('#')[0]}${noCache ? '#noCache' : ''}`,
+                    );
                     // $.info(`Script loaded: >>>\n ${script}`);
                 } catch (err) {
                     $.error(
                         `Error when downloading remote script: ${item.args.content}.\n Reason: ${err}`,
                     );
-                    // skip the script if download failed.
-                    continue;
+                    throw new Error(`无法下载脚本: ${url}`);
                 }
             } else {
                 script = content;
@@ -114,6 +129,7 @@ async function process(proxies, operators = [], targetPlatform) {
                 script,
                 targetPlatform,
                 $arguments,
+                source,
             );
         } else {
             processor = PROXY_PROCESSORS[item.type](item.args || {});
@@ -123,7 +139,7 @@ async function process(proxies, operators = [], targetPlatform) {
     return proxies;
 }
 
-function produce(proxies, targetPlatform) {
+function produce(proxies, targetPlatform, type) {
     const producer = PROXY_PRODUCERS[targetPlatform];
     if (!producer) {
         throw new Error(`Target platform: ${targetPlatform} is not supported!`);
@@ -137,10 +153,21 @@ function produce(proxies, targetPlatform) {
 
     $.info(`Producing proxies for target: ${targetPlatform}`);
     if (typeof producer.type === 'undefined' || producer.type === 'SINGLE') {
+        let localPort = 10000;
         return proxies
             .map((proxy) => {
                 try {
-                    return producer.produce(proxy);
+                    let line = producer.produce(proxy, type);
+                    if (
+                        line.length > 0 &&
+                        line.includes('__SubStoreLocalPort__')
+                    ) {
+                        line = line.replace(
+                            /__SubStoreLocalPort__/g,
+                            localPort++,
+                        );
+                    }
+                    return line;
                 } catch (err) {
                     $.error(
                         `Cannot produce proxy: ${JSON.stringify(
@@ -155,7 +182,7 @@ function produce(proxies, targetPlatform) {
             .filter((line) => line.length > 0)
             .join('\n');
     } else if (producer.type === 'ALL') {
-        return producer.produce(proxies);
+        return producer.produce(proxies, type);
     }
 }
 
@@ -163,6 +190,9 @@ export const ProxyUtils = {
     parse,
     process,
     produce,
+    isIPv4,
+    isIPv6,
+    isIP,
 };
 
 function tryParse(parser, line) {
@@ -181,4 +211,74 @@ function safeMatch(parser, line) {
     } catch (err) {
         return false;
     }
+}
+
+function lastParse(proxy) {
+    if (proxy.server) {
+        proxy.server = proxy.server
+            .trim()
+            .replace(/^\[/, '')
+            .replace(/\]$/, '');
+    }
+    if (proxy.type === 'trojan') {
+        if (proxy.network === 'tcp') {
+            delete proxy.network;
+        }
+    }
+    if (['trojan', 'tuic', 'hysteria', 'hysteria2'].includes(proxy.type)) {
+        proxy.tls = true;
+    }
+    if (proxy.network) {
+        let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+        let transporthost = proxy[`${proxy.network}-opts`]?.headers?.host;
+        if (transporthost && !transportHost) {
+            proxy[`${proxy.network}-opts`].headers.Host = transporthost;
+            delete proxy[`${proxy.network}-opts`].headers.host;
+        }
+    }
+    if (proxy.tls && !proxy.sni) {
+        if (proxy.network) {
+            let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+            transportHost = Array.isArray(transportHost)
+                ? transportHost[0]
+                : transportHost;
+            if (transportHost) {
+                proxy.sni = transportHost;
+            }
+        }
+        if (!proxy.sni && !isIP(proxy.server)) {
+            proxy.sni = proxy.server;
+        }
+    }
+    // 非 tls, 有 ws/http 传输层, 使用域名的节点, 将设置传输层 Host 防止之后域名解析后丢失域名(不覆盖现有的 Host)
+    if (
+        !proxy.tls &&
+        ['ws', 'http'].includes(proxy.network) &&
+        !proxy[`${proxy.network}-opts`]?.headers?.Host &&
+        !isIP(proxy.server)
+    ) {
+        proxy[`${proxy.network}-opts`] = proxy[`${proxy.network}-opts`] || {};
+        proxy[`${proxy.network}-opts`].headers =
+            proxy[`${proxy.network}-opts`].headers || {};
+        proxy[`${proxy.network}-opts`].headers.Host =
+            ['vmess', 'vless'].includes(proxy.type) && proxy.network === 'http'
+                ? [proxy.server]
+                : proxy.server;
+    }
+    // 统一将 VMess 和 VLESS 的 http 传输层的 path 和 Host 处理为数组
+    if (['vmess', 'vless'].includes(proxy.type) && proxy.network === 'http') {
+        let transportPath = proxy[`${proxy.network}-opts`]?.path;
+        let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
+        if (transportHost && !Array.isArray(transportHost)) {
+            proxy[`${proxy.network}-opts`].headers.Host = [transportHost];
+        }
+        if (transportPath && !Array.isArray(transportPath)) {
+            proxy[`${proxy.network}-opts`].path = [transportPath];
+        }
+    }
+    return proxy;
+}
+
+function isIP(ip) {
+    return isIPv4(ip) || isIPv6(ip);
 }

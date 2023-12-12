@@ -62,24 +62,45 @@ function shadowsocks(proxy) {
         );
     }
 
-    // tls fingerprint
-    appendIfPresent(
-        `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
-        'tls-fingerprint',
-    );
+    if (needTls(proxy)) {
+        appendIfPresent(
+            `,tls-pubkey-sha256=${proxy['tls-pubkey-sha256']}`,
+            'tls-pubkey-sha256',
+        );
+        appendIfPresent(`,tls-alpn=${proxy['tls-alpn']}`, 'tls-alpn');
+        appendIfPresent(
+            `,tls-no-session-ticket=${proxy['tls-no-session-ticket']}`,
+            'tls-no-session-ticket',
+        );
+        appendIfPresent(
+            `,tls-no-session-reuse=${proxy['tls-no-session-reuse']}`,
+            'tls-no-session-reuse',
+        );
+        // tls fingerprint
+        appendIfPresent(
+            `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
+            'tls-fingerprint',
+        );
 
-    // tls verification
-    appendIfPresent(
-        `,tls-verification=${!proxy['skip-cert-verify']}`,
-        'skip-cert-verify',
-    );
-    appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+        // tls verification
+        appendIfPresent(
+            `,tls-verification=${!proxy['skip-cert-verify']}`,
+            'skip-cert-verify',
+        );
+        appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+    }
 
     // tfo
     appendIfPresent(`,fast-open=${proxy.tfo}`, 'tfo');
 
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
+
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
 
     // tag
     append(`,tag=${proxy.name}`);
@@ -113,6 +134,12 @@ function shadowsocksr(proxy) {
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
 
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
+
     // tag
     append(`,tag=${proxy.name}`);
 
@@ -133,11 +160,11 @@ function trojan(proxy) {
             if (needTls(proxy)) append(`,obfs=wss`);
             else append(`,obfs=ws`);
             appendIfPresent(
-                `,obfs-uri=${proxy['ws-opts'].path}`,
+                `,obfs-uri=${proxy['ws-opts']?.path}`,
                 'ws-opts.path',
             );
             appendIfPresent(
-                `,obfs-host=${proxy['ws-opts'].headers.Host}`,
+                `,obfs-host=${proxy['ws-opts']?.headers?.Host}`,
                 'ws-opts.headers.Host',
             );
         } else {
@@ -150,24 +177,45 @@ function trojan(proxy) {
         append(`,over-tls=true`);
     }
 
-    // tls fingerprint
-    appendIfPresent(
-        `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
-        'tls-fingerprint',
-    );
+    if (needTls(proxy)) {
+        appendIfPresent(
+            `,tls-pubkey-sha256=${proxy['tls-pubkey-sha256']}`,
+            'tls-pubkey-sha256',
+        );
+        appendIfPresent(`,tls-alpn=${proxy['tls-alpn']}`, 'tls-alpn');
+        appendIfPresent(
+            `,tls-no-session-ticket=${proxy['tls-no-session-ticket']}`,
+            'tls-no-session-ticket',
+        );
+        appendIfPresent(
+            `,tls-no-session-reuse=${proxy['tls-no-session-reuse']}`,
+            'tls-no-session-reuse',
+        );
+        // tls fingerprint
+        appendIfPresent(
+            `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
+            'tls-fingerprint',
+        );
 
-    // tls verification
-    appendIfPresent(
-        `,tls-verification=${!proxy['skip-cert-verify']}`,
-        'skip-cert-verify',
-    );
-    appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+        // tls verification
+        appendIfPresent(
+            `,tls-verification=${!proxy['skip-cert-verify']}`,
+            'skip-cert-verify',
+        );
+        appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+    }
 
     // tfo
     appendIfPresent(`,fast-open=${proxy.tfo}`, 'tfo');
 
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
+
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
 
     // tag
     append(`,tag=${proxy.name}`);
@@ -206,12 +254,18 @@ function vmess(proxy) {
         } else {
             throw new Error(`network ${proxy.network} is unsupported`);
         }
+        let transportPath = proxy[`${proxy.network}-opts`]?.path;
+        let transportHost = proxy[`${proxy.network}-opts`]?.headers?.Host;
         appendIfPresent(
-            `,obfs-uri=${proxy[`${proxy.network}-opts`].path}`,
+            `,obfs-uri=${
+                Array.isArray(transportPath) ? transportPath[0] : transportPath
+            }`,
             `${proxy.network}-opts.path`,
         );
         appendIfPresent(
-            `,obfs-host=${proxy[`${proxy.network}-opts`].headers.Host}`,
+            `,obfs-host=${
+                Array.isArray(transportHost) ? transportHost[0] : transportHost
+            }`,
             `${proxy.network}-opts.headers.Host`,
         );
     } else {
@@ -219,18 +273,33 @@ function vmess(proxy) {
         if (proxy.tls) append(`,obfs=over-tls`);
     }
 
-    // tls fingerprint
-    appendIfPresent(
-        `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
-        'tls-fingerprint',
-    );
+    if (needTls(proxy)) {
+        appendIfPresent(
+            `,tls-pubkey-sha256=${proxy['tls-pubkey-sha256']}`,
+            'tls-pubkey-sha256',
+        );
+        appendIfPresent(`,tls-alpn=${proxy['tls-alpn']}`, 'tls-alpn');
+        appendIfPresent(
+            `,tls-no-session-ticket=${proxy['tls-no-session-ticket']}`,
+            'tls-no-session-ticket',
+        );
+        appendIfPresent(
+            `,tls-no-session-reuse=${proxy['tls-no-session-reuse']}`,
+            'tls-no-session-reuse',
+        );
+        // tls fingerprint
+        appendIfPresent(
+            `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
+            'tls-fingerprint',
+        );
 
-    // tls verification
-    appendIfPresent(
-        `,tls-verification=${!proxy['skip-cert-verify']}`,
-        'skip-cert-verify',
-    );
-    appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+        // tls verification
+        appendIfPresent(
+            `,tls-verification=${!proxy['skip-cert-verify']}`,
+            'skip-cert-verify',
+        );
+        appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+    }
 
     // AEAD
     if (isPresent(proxy, 'aead')) {
@@ -244,6 +313,12 @@ function vmess(proxy) {
 
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
+
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
 
     // tag
     append(`,tag=${proxy.name}`);
@@ -266,24 +341,45 @@ function http(proxy) {
     }
     appendIfPresent(`,over-tls=${proxy.tls}`, 'tls');
 
-    // tls fingerprint
-    appendIfPresent(
-        `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
-        'tls-fingerprint',
-    );
+    if (needTls(proxy)) {
+        appendIfPresent(
+            `,tls-pubkey-sha256=${proxy['tls-pubkey-sha256']}`,
+            'tls-pubkey-sha256',
+        );
+        appendIfPresent(`,tls-alpn=${proxy['tls-alpn']}`, 'tls-alpn');
+        appendIfPresent(
+            `,tls-no-session-ticket=${proxy['tls-no-session-ticket']}`,
+            'tls-no-session-ticket',
+        );
+        appendIfPresent(
+            `,tls-no-session-reuse=${proxy['tls-no-session-reuse']}`,
+            'tls-no-session-reuse',
+        );
+        // tls fingerprint
+        appendIfPresent(
+            `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
+            'tls-fingerprint',
+        );
 
-    // tls verification
-    appendIfPresent(
-        `,tls-verification=${!proxy['skip-cert-verify']}`,
-        'skip-cert-verify',
-    );
-    appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+        // tls verification
+        appendIfPresent(
+            `,tls-verification=${!proxy['skip-cert-verify']}`,
+            'skip-cert-verify',
+        );
+        appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+    }
 
     // tfo
     appendIfPresent(`,fast-open=${proxy.tfo}`, 'tfo');
 
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
+
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
 
     // tag
     append(`,tag=${proxy.name}`);
@@ -306,24 +402,45 @@ function socks5(proxy) {
     }
     appendIfPresent(`,over-tls=${proxy.tls}`, 'tls');
 
-    // tls fingerprint
-    appendIfPresent(
-        `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
-        'tls-fingerprint',
-    );
+    if (needTls(proxy)) {
+        appendIfPresent(
+            `,tls-pubkey-sha256=${proxy['tls-pubkey-sha256']}`,
+            'tls-pubkey-sha256',
+        );
+        appendIfPresent(`,tls-alpn=${proxy['tls-alpn']}`, 'tls-alpn');
+        appendIfPresent(
+            `,tls-no-session-ticket=${proxy['tls-no-session-ticket']}`,
+            'tls-no-session-ticket',
+        );
+        appendIfPresent(
+            `,tls-no-session-reuse=${proxy['tls-no-session-reuse']}`,
+            'tls-no-session-reuse',
+        );
+        // tls fingerprint
+        appendIfPresent(
+            `,tls-cert-sha256=${proxy['tls-fingerprint']}`,
+            'tls-fingerprint',
+        );
 
-    // tls verification
-    appendIfPresent(
-        `,tls-verification=${!proxy['skip-cert-verify']}`,
-        'skip-cert-verify',
-    );
-    appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+        // tls verification
+        appendIfPresent(
+            `,tls-verification=${!proxy['skip-cert-verify']}`,
+            'skip-cert-verify',
+        );
+        appendIfPresent(`,tls-host=${proxy.sni}`, 'sni');
+    }
 
     // tfo
     appendIfPresent(`,fast-open=${proxy.tfo}`, 'tfo');
 
     // udp
     appendIfPresent(`,udp-relay=${proxy.udp}`, 'udp');
+
+    // server_check_url
+    result.appendIfPresent(
+        `,server_check_url=${proxy['test-url']}`,
+        'test-url',
+    );
 
     // tag
     append(`,tag=${proxy.name}`);
@@ -332,11 +449,5 @@ function socks5(proxy) {
 }
 
 function needTls(proxy) {
-    return (
-        proxy.tls ||
-        proxy.sni ||
-        typeof proxy['skip-cert-verify'] !== 'undefined' ||
-        typeof proxy['tls-fingerprint'] !== 'undefined' ||
-        typeof proxy['tls-host'] !== 'undefined'
-    );
+    return proxy.tls;
 }

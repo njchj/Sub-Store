@@ -10,7 +10,12 @@ export default function register($app) {
 }
 
 async function getSettings(req, res) {
-    const settings = $.read(SETTINGS_KEY);
+    let settings = $.read(SETTINGS_KEY);
+    if (!settings) {
+        settings = {};
+        $.write(settings, SETTINGS_KEY);
+    }
+
     if (!settings.avatarUrl) await updateGitHubAvatar();
     if (!settings.artifactStore) await updateArtifactStore();
     success(res, settings);
@@ -44,8 +49,12 @@ export async function updateGitHubAvatar() {
                 .then((resp) => JSON.parse(resp.body));
             settings.avatarUrl = data['avatar_url'];
             $.write(settings, SETTINGS_KEY);
-        } catch (e) {
-            $.error('Failed to fetch GitHub avatar for User: ' + username);
+        } catch (err) {
+            $.error(
+                `Failed to fetch GitHub avatar for User: ${username}. Reason: ${
+                    err.message ?? err
+                }`,
+            );
         }
     }
 }
@@ -67,7 +76,11 @@ export async function updateArtifactStore() {
                 $.write(settings, SETTINGS_KEY);
             }
         } catch (err) {
-            $.error('Failed to fetch artifact store for User: ' + githubUser);
+            $.error(
+                `Failed to fetch artifact store for User: ${githubUser}. Reason: ${
+                    err.message ?? err
+                }`,
+            );
         }
     }
 }
